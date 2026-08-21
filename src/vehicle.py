@@ -463,19 +463,26 @@ def report_orbit(state, crossing=None):
 # ----------------------------------------------------------------------------
 # Plotting
 # ----------------------------------------------------------------------------
-def plot_trajectory(result):
-    segments, thetas = result["segments"], result["thetas"]
-    names = result["phase_names"]
-    fig, axes = plt.subplots(2, 3, figsize=(16, 8))
-    colors = [
-        "tab:blue",
-        "tab:orange",
-        "tab:green",
-        "tab:red",
-        "tab:purple",
-        "tab:brown",
-    ]
-    for i, (sol, color) in enumerate(zip(segments, colors)):
+PHASE_COLOR = {"S1": "tab:blue", "S2": "tab:orange", "S3": "tab:green", "COAST": "grey"}
+
+
+def velocity_components(Y):
+    """Split inertial velocity into LOCAL radial (climb) and tangential (orbital)."""
+    x, y, vx, vy = Y[0], Y[1], Y[2], Y[3]
+    rmag = np.hypot(x, y)
+    v_radial = (x * vx + y * vy) / rmag
+    v_tangential = (x * vy - y * vx) / rmag
+    return v_radial, v_tangential
+
+
+def plot_trajectory(result, target_alt=400_000.0):
+    segments, names = result["segments"], result["phase_names"]
+    v_orb = np.sqrt(MU_EARTH / (R_EARTH + target_alt))
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 9))
+    seen = set()
+
+    for sol, name in zip(segments, names):
         tf = np.linspace(sol.t[0], sol.t[-1], 400)
         Y = sol.sol(tf)
         x, y, vx, vy, m = Y
@@ -484,38 +491,36 @@ def plot_trajectory(result):
         alt = rmag - R_EARTH
         speed = np.hypot(vx, vy)
         downrange = np.arctan2(y, x) * R_EARTH
+        v_rad, v_tan = velocity_components(Y)
 
-        q, alpha, gamma, pitch = [], [], [], []
-        for k in range(len(tf)):
-            s = Y[:, k]
-            qk, ak, gk = flight_angles(s, thetas[i])
-            q.append(qk)
-            alpha.append(np.degrees(ak))
-            gamma.append(np.degrees(gk))
-            pitch.append(np.degrees(theta_to_pitch(thetas[i], s)))
-        q = np.array(q)
-        alpha = np.array(alpha)
+        c = PHASE_COLOR[name]
+        lab = name if name not in seen else None
+        seen.add(name)
 
-        label = names[i]
-        axes[0, 0].plot(downrange / 1e3, alt / 1e3, color=color, label=label)
-        axes[0, 1].plot(tf, alt / 1e3, color=color, label=label)
-        axes[0, 2].plot(tf, speed / 1e3, color=color, label=label)
-        axes[1, 0].plot(tf, gamma, color=color, label=f"{label} gamma")
-        axes[1, 0].plot(tf, pitch, color=color, ls="--", alpha=0.5)
-        axes[1, 1].plot(tf, q / 1e3, color=color, label=f"{label} q")
-        axes[1, 1].plot(tf, np.abs(alpha), color=color, ls=":", alpha=0.7)
+        axes[0, 0].plot(downrange / 1e3, alt / 1e3, color=c, lw=2, label=lab)
+        axes[0, 1].plot(tf, alt / 1e3, color=c, lw=2, label=lab)
+        axes[1, 0].plot(tf, speed / 1e3, color=c, lw=2, label=lab)
+        axes[1, 1].plot(tf, v_tan / 1e3, color=c, lw=2, label=lab)
+        axes[1, 1].plot(tf, v_rad / 1e3, color=c, lw=1.4, ls="--", alpha=0.75)
 
     axes[0, 0].set(xlabel="Downrange (km)", ylabel="Altitude (km)", title="Trajectory")
     axes[0, 1].set(xlabel="Time (s)", ylabel="Altitude (km)", title="Altitude")
-    axes[0, 2].set(xlabel="Time (s)", ylabel="Speed (km/s)", title="Inertial speed")
-    axes[1, 0].set(
-        xlabel="Time (s)", ylabel="deg", title="gamma (--) / cmd pitch (- -)"
-    )
+    axes[1, 0].set(xlabel="Time (s)", ylabel="Speed (km/s)", title="Inertial speed")
     axes[1, 1].set(
-        xlabel="Time (s)", ylabel="q (kPa) / alpha (deg)", title="Dyn. pressure & AoA"
+        xlabel="Time (s)",
+        ylabel="Speed (km/s)",
+        title="Velocity components: tangential (--) / radial (- -)",
     )
 
-    axes[1, 0].axhline(0, color="k", lw=0.8, ls=":")
+    axes[0, 1].axhline(target_alt / 1000, color="crimson", ls=":", lw=1.2)
+    axes[1, 0].axhline(v_orb / 1000, color="crimson", ls="--", lw=1.2)
+    axes[1, 1].axhline(v_orb / 1000, color="crimson", ls="--", lw=1.2)
+    axes[1, 1].axhline(0.0, color="k", lw=0.8, ls=":")
+
+    c = result.get("crossing")
+    if c:
+        for ax in (axes[1, 0], axes[1, 1]):
+            ax.axvline(c["t"], color="crimson", lw=1.0, alpha=0.6)
 
     for ax in axes.flat:
         ax.legend(fontsize=8)
@@ -539,7 +544,9 @@ if __name__ == "__main__":
         )
     print(f"Total ideal dV    : {sum(ideal_delta_v()):.0f} m/s\n")
 
-    result = simulate(rc, pitches_deg=[60.0, 20.0, 5.0], coast_times_s=[5.0, 3.0, 5.0])
+    result = simulate(
+        rc, pitches_deg=[60.0, 20.0, 5.0], coast_times_s=[0.0, 300.0, 0.0]
+    )
 
     print("\nInsertion residuals [dr (m), dv (m/s), gamma (rad)]:")
     print(f"  {tgt.residuals(result['final'])}")
